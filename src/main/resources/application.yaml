@@ -1,0 +1,39 @@
+
+#Server Configuration
+server:
+  shutdown: graceful
+  port: 9090
+  servlet:
+    context-path: /keycloak
+
+jwt:
+  auth:
+    converter:
+      principal-attribute: preferred_username
+      resource-id: spring-boot-client
+
+logging:
+  level:
+    org:
+      springframework:
+        security: trace
+
+spring:
+  security:
+    oauth2:
+      client:
+        registration:
+          external:
+            client-name: spring-boot-authorization-code
+            client-secret: 6cwXqAuhWR9zWHOO86ssO8NQxlD0NVrn
+            client-id: spring-boot-authorization-code
+            scope: openid,offline_access,profile
+            authorization-grant-type: authorization_code
+            provider: external
+        provider:
+          external:
+            issuer-uri: http://localhost:8080/realms/spring-boot-test
+
+
+
+
