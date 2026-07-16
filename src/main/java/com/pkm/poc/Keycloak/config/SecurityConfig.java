@@ -2,14 +2,18 @@ package com.pkm.poc.Keycloak.config;
 
 import java.net.URI;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.authority.mapping.GrantedAuthoritiesMapper;
 import org.springframework.security.oauth2.client.oidc.web.logout.OidcClientInitiatedLogoutSuccessHandler;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
@@ -19,6 +23,7 @@ import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity
 public class SecurityConfig {
 
 
@@ -37,10 +42,13 @@ public class SecurityConfig {
         http
                 .oauth2Login((oauth2Login) -> oauth2Login
                         .userInfoEndpoint((userInfo) -> userInfo
-                                .userAuthoritiesMapper(grantedAuthoritiesMapper())
+                                .userAuthoritiesMapper(grantedAuthoritiesMapperRoles())
                         )
                 ).logout((logout) -> logout
                         .logoutSuccessHandler(oidcLogoutSuccessHandler(clientRegistrationRepository))
+                        .invalidateHttpSession(true)
+                        .clearAuthentication(true)
+                        .deleteCookies("JSESSIONID")
 
                 );
 
@@ -85,24 +93,56 @@ public class SecurityConfig {
         };
     }
 
-    /*@Bean
-    public ClientRegistrationRepository clientRepository() {
 
-        ClientRegistration keycloak = keycloakClientRegistration();
-        return new InMemoryClientRegistrationRepository(keycloak);
+    private GrantedAuthoritiesMapper grantedAuthoritiesMapperRoles() {
+        return (authorities) -> {
+            Set<GrantedAuthority> mappedAuthorities = new HashSet<>();
+            authorities.forEach((authority) -> {
+                if (authority instanceof OidcUserAuthority) {
+                    OidcUserAuthority userAuthority = (OidcUserAuthority) authority;
+
+                    // Keep the original OIDC authority
+                    mappedAuthorities.add(new OidcUserAuthority(
+                            "OIDC_USER", userAuthority.getIdToken(), userAuthority.getUserInfo()));
+
+                    // Extract realm roles from "realm_access.roles" claim
+                    Map<String, Object> realmAccess = userAuthority.getUserInfo()
+                            .getClaimAsMap("realm_access");
+                    if (realmAccess != null) {
+                        List<String> realmRoles = (List<String>) realmAccess.get("roles");
+                        if (realmRoles != null) {
+                            realmRoles.forEach(role ->
+                                    mappedAuthorities.add(new SimpleGrantedAuthority("ROLE_" + role)));
+                        }
+                    }
+
+                    // Extract client roles from "resource_access.{clientId}.roles" claim
+                    Map<String, Object> resourceAccess = userAuthority.getUserInfo()
+                            .getClaimAsMap("resource_access");
+                    if (resourceAccess != null) {
+                        Map<String, Object> clientRoles = (Map<String, Object>)
+                                resourceAccess.get("spring-boot-authorization-code");
+                        if (clientRoles != null) {
+                            List<String> roles = (List<String>) clientRoles.get("roles");
+                            if (roles != null) {
+                                roles.forEach(role ->
+                                        mappedAuthorities.add(new SimpleGrantedAuthority("ROLE_" + role)));
+                            }
+                        }
+                    }
+
+                } else if (authority instanceof OAuth2UserAuthority) {
+                    OAuth2UserAuthority userAuthority = (OAuth2UserAuthority) authority;
+                    mappedAuthorities.add(new OAuth2UserAuthority(
+                            "OAUTH2_USER", userAuthority.getAttributes()));
+                } else {
+                    mappedAuthorities.add(authority);
+                }
+            });
+
+            return mappedAuthorities;
+        };
     }
 
-    private ClientRegistration keycloakClientRegistration() {
 
-        return ClientRegistration.withRegistrationId("spring-boot-test")
-                .clientId("spring-boot-authorization-code")
-                .clientSecret("6cwXqAuhWR9zWHOO86ssO8NQxlD0NVrn")
-                //.redirectUri("http://localhost:9090/keycloak/api/admin")
-                .authorizationGrantType(AuthorizationGrantType.AUTHORIZATION_CODE)
-                .issuerUri("http://localhost:8080/realms/spring-boot-test")
-                .authorizationUri("http://localhost:8080/realms/spring-boot-test/protocol/openid-connect/auth")
-                .tokenUri("http://localhost:8080/realms/spring-boot-test/protocol/openid-connect/token")
-                .userInfoUri("http://localhost:8080/realms/spring-boot-test/protocol/openid-connect/userinfo")
-                .build();
-    }*/
 }

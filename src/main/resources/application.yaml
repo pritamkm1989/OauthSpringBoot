@@ -25,9 +25,9 @@ spring:
         registration:
           external:
             client-name: spring-boot-authorization-code
-            client-secret: 6cwXqAuhWR9zWHOO86ssO8NQxlD0NVrn
+            client-secret: 8ej8a9vvYLpTSonQ1PAmX0CO2p2ujP2y
             client-id: spring-boot-authorization-code
-            scope: openid,offline_access,profile
+            scope: openid,offline_access,profile,roles
             authorization-grant-type: authorization_code
             provider: external
         provider:
