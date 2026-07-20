@@ -1,10 +1,11 @@
 package com.pkm.poc.Keycloak.config;
 
 import java.net.URI;
-import java.util.HashSet;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
+import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,8 +18,14 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.authority.mapping.GrantedAuthoritiesMapper;
 import org.springframework.security.oauth2.client.oidc.web.logout.OidcClientInitiatedLogoutSuccessHandler;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
+import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestCustomizers;
+import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestResolver;
 import org.springframework.security.oauth2.core.oidc.user.OidcUserAuthority;
 import org.springframework.security.oauth2.core.user.OAuth2UserAuthority;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
+import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
@@ -26,89 +33,118 @@ import org.springframework.security.web.SecurityFilterChain;
 @EnableMethodSecurity
 public class SecurityConfig {
 
-
     @Autowired
-    private  ClientRegistrationRepository clientRegistrationRepository;
+    private ClientRegistrationRepository clientRegistrationRepository;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http.authorizeHttpRequests((authz) ->
-                authz.requestMatchers("/open","/error", "/webjars/**", "/unauthenticated", "/oauth2/**", "/login/**").permitAll().
-                        anyRequest().fullyAuthenticated());
+        http.authorizeHttpRequests(authz -> authz
+                .requestMatchers("/open", "/error", "/webjars/**", "/unauthenticated",
+                        "/oauth2/**", "/login/**").permitAll()
+                .requestMatchers("/api/login", "/api/logout").permitAll()
+                .anyRequest().authenticated()
+        );
 
-        http.sessionManagement(sess -> sess.sessionCreationPolicy(
-                SessionCreationPolicy.ALWAYS));
+        http.sessionManagement(sess -> sess.sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED));
 
-        http
-                .oauth2Login((oauth2Login) -> oauth2Login
-                        .userInfoEndpoint((userInfo) -> userInfo
-                                .userAuthoritiesMapper(grantedAuthoritiesMapperRoles())
+        http.csrf(csrf -> csrf.disable());
+
+        http.oauth2Login(oauth2Login -> oauth2Login
+                .authorizationEndpoint(authorization -> authorization
+                        .authorizationRequestResolver(
+                                authorizationRequestResolver(clientRegistrationRepository)
                         )
-                ).logout((logout) -> logout
-                        .logoutSuccessHandler(oidcLogoutSuccessHandler(clientRegistrationRepository))
-                        .invalidateHttpSession(true)
-                        .clearAuthentication(true)
-                        .deleteCookies("JSESSIONID")
+                )
+                .userInfoEndpoint(userInfo -> userInfo
+                        .userAuthoritiesMapper(grantedAuthoritiesMapperRoles())
+                )
+        );
 
-                );
+        http.oauth2ResourceServer(oauth2 -> oauth2
+                .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
+        );
 
+        http.logout(logout -> logout
+                .logoutSuccessHandler(oidcLogoutSuccessHandler(clientRegistrationRepository))
+                .invalidateHttpSession(true)
+                .clearAuthentication(true)
+                .deleteCookies("JSESSIONID")
+        );
 
         return http.build();
-
     }
 
     @Bean
-    OidcClientInitiatedLogoutSuccessHandler oidcLogoutSuccessHandler(ClientRegistrationRepository clientRegistrationRepository) {
-        OidcClientInitiatedLogoutSuccessHandler successHandler = new OidcClientInitiatedLogoutSuccessHandler(clientRegistrationRepository);
-        successHandler.setPostLogoutRedirectUri(URI.create("http://localhost:9090/keycloak/open").toString());
+    OidcClientInitiatedLogoutSuccessHandler oidcLogoutSuccessHandler(
+            ClientRegistrationRepository clientRegistrationRepository) {
+        OidcClientInitiatedLogoutSuccessHandler successHandler =
+                new OidcClientInitiatedLogoutSuccessHandler(clientRegistrationRepository);
+        successHandler.setPostLogoutRedirectUri(
+                URI.create("http://localhost:9090/keycloak/open").toString());
         return successHandler;
     }
 
-
-
-
-    private GrantedAuthoritiesMapper grantedAuthoritiesMapper() {
-        return (authorities) -> {
-            Set<GrantedAuthority> mappedAuthorities = new HashSet<>();
-
-            authorities.forEach((authority) -> {
-                GrantedAuthority mappedAuthority;
-
-                if (authority instanceof OidcUserAuthority) {
-                    OidcUserAuthority userAuthority = (OidcUserAuthority) authority;
-                    mappedAuthority = new OidcUserAuthority(
-                            "OIDC_USER", userAuthority.getIdToken(), userAuthority.getUserInfo());
-                } else if (authority instanceof OAuth2UserAuthority) {
-                    OAuth2UserAuthority userAuthority = (OAuth2UserAuthority) authority;
-                    mappedAuthority = new OAuth2UserAuthority(
-                            "OAUTH2_USER", userAuthority.getAttributes());
-                } else {
-                    mappedAuthority = authority;
-                }
-
-                mappedAuthorities.add(mappedAuthority);
-            });
-
-            return mappedAuthorities;
-        };
+    private OAuth2AuthorizationRequestResolver authorizationRequestResolver(
+            ClientRegistrationRepository clientRegistrationRepository) {
+        DefaultOAuth2AuthorizationRequestResolver resolver =
+                new DefaultOAuth2AuthorizationRequestResolver(
+                        clientRegistrationRepository,
+                        "/oauth2/authorization");
+        resolver.setAuthorizationRequestCustomizer(
+                OAuth2AuthorizationRequestCustomizers.withPkce());
+        return resolver;
     }
 
+    private JwtAuthenticationConverter jwtAuthenticationConverter() {
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(jwt -> {
+            List<GrantedAuthority> authorities = new java.util.ArrayList<>();
+
+            // Extract realm roles from "realm_access.roles" claim
+            Map<String, Object> realmAccess = jwt.getClaimAsMap("realm_access");
+            if (realmAccess != null) {
+                @SuppressWarnings("unchecked")
+                List<String> realmRoles = (List<String>) realmAccess.get("roles");
+                if (realmRoles != null) {
+                    realmRoles.forEach(role ->
+                            authorities.add(new SimpleGrantedAuthority("ROLE_" + role)));
+                }
+            }
+
+            // Extract client roles from "resource_access.{clientId}.roles" claim
+            Map<String, Object> resourceAccess = jwt.getClaimAsMap("resource_access");
+            if (resourceAccess != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> clientRoles = (Map<String, Object>)
+                        resourceAccess.get("spring-boot-authorization-code");
+                if (clientRoles != null) {
+                    @SuppressWarnings("unchecked")
+                    List<String> roles = (List<String>) clientRoles.get("roles");
+                    if (roles != null) {
+                        roles.forEach(role ->
+                                authorities.add(new SimpleGrantedAuthority("ROLE_" + role)));
+                    }
+                }
+            }
+
+            return authorities;
+        });
+        return converter;
+    }
 
     private GrantedAuthoritiesMapper grantedAuthoritiesMapperRoles() {
         return (authorities) -> {
-            Set<GrantedAuthority> mappedAuthorities = new HashSet<>();
-            authorities.forEach((authority) -> {
-                if (authority instanceof OidcUserAuthority) {
-                    OidcUserAuthority userAuthority = (OidcUserAuthority) authority;
+            var mappedAuthorities = new java.util.HashSet<GrantedAuthority>();
 
-                    // Keep the original OIDC authority
+            authorities.forEach(authority -> {
+                if (authority instanceof OidcUserAuthority userAuthority) {
                     mappedAuthorities.add(new OidcUserAuthority(
                             "OIDC_USER", userAuthority.getIdToken(), userAuthority.getUserInfo()));
 
-                    // Extract realm roles from "realm_access.roles" claim
                     Map<String, Object> realmAccess = userAuthority.getUserInfo()
                             .getClaimAsMap("realm_access");
                     if (realmAccess != null) {
+                        @SuppressWarnings("unchecked")
                         List<String> realmRoles = (List<String>) realmAccess.get("roles");
                         if (realmRoles != null) {
                             realmRoles.forEach(role ->
@@ -116,13 +152,14 @@ public class SecurityConfig {
                         }
                     }
 
-                    // Extract client roles from "resource_access.{clientId}.roles" claim
                     Map<String, Object> resourceAccess = userAuthority.getUserInfo()
                             .getClaimAsMap("resource_access");
                     if (resourceAccess != null) {
+                        @SuppressWarnings("unchecked")
                         Map<String, Object> clientRoles = (Map<String, Object>)
                                 resourceAccess.get("spring-boot-authorization-code");
                         if (clientRoles != null) {
+                            @SuppressWarnings("unchecked")
                             List<String> roles = (List<String>) clientRoles.get("roles");
                             if (roles != null) {
                                 roles.forEach(role ->
@@ -131,8 +168,7 @@ public class SecurityConfig {
                         }
                     }
 
-                } else if (authority instanceof OAuth2UserAuthority) {
-                    OAuth2UserAuthority userAuthority = (OAuth2UserAuthority) authority;
+                } else if (authority instanceof OAuth2UserAuthority userAuthority) {
                     mappedAuthorities.add(new OAuth2UserAuthority(
                             "OAUTH2_USER", userAuthority.getAttributes()));
                 } else {
@@ -143,6 +179,4 @@ public class SecurityConfig {
             return mappedAuthorities;
         };
     }
-
-
 }
